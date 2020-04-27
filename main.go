@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/alecthomas/kong"
 	log "github.com/sirupsen/logrus"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -96,6 +97,7 @@ func main() {
 	ctx = context.WithValue(ctx, "defaultMaxAge", defaultMaxAge)
 	ctx = context.WithValue(ctx, "managedLabel", cli.ManagedLabel)
 	ctx = context.WithValue(ctx, "maxAgeLabel", cli.MaxAgeLabel)
+	ctx, cancel := context.WithCancel(ctx)
 	ctx = exitHandler(ctx)
 
 	// we use the Lease lock type since edits to Leases are less common
@@ -112,13 +114,7 @@ func main() {
 	}
 
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
-		Lock: lock,
-		// IMPORTANT: you MUST ensure that any code you have that
-		// is protected by the lease must terminate **before**
-		// you call cancel. Otherwise, you could have a background
-		// loop still running and another process could
-		// get elected before your background loop finished, violating
-		// the stated goal of the lease.
+		Lock:            lock,
 		ReleaseOnCancel: true,
 		LeaseDuration:   60 * time.Second,
 		RenewDeadline:   15 * time.Second,
@@ -153,12 +149,11 @@ func main() {
 				run()
 			},
 			OnStoppedLeading: func() {
-				// we can do cleanup here
 				logger.Infof("leader lost: %s", cli.HostName)
+				cancel()
 				os.Exit(0)
 			},
 			OnNewLeader: func(identity string) {
-				// we're notified when new leader elected
 				if identity == cli.HostName {
 					// I just got the lock
 					return
@@ -174,44 +169,74 @@ func main() {
 func cycle(ctx context.Context) error {
 	kubectl := ctx.Value("kubectl").(*kubernetes.Clientset)
 	logger := ctx.Value("logger").(*log.Entry)
+	defaultMaxAge := ctx.Value("defaultMaxAge").(time.Duration)
 	managedLabel := ctx.Value("managedLabel").(string)
 
 	labelSelector := labels.Set(map[string]string{managedLabel: "true"})
 
-	logger.Trace("attempting to list existing pods")
-	pods, err := kubectl.CoreV1().Pods("").List(metav1.ListOptions{
+	logger.Trace("attempting to list managed deployments")
+	deployments, err := kubectl.AppsV1().Deployments("").List(metav1.ListOptions{
 		LabelSelector: labelSelector.String(),
 	})
 	if err != nil {
-		logger.WithError(err).Debug("list pods failed")
+		logger.WithError(err).Debug("list deployments failed")
 		return err
 	}
 
-	logger.Tracef("%d pods are being managed", len(pods.Items))
+	logger.Tracef("%d deployments are being managed", len(deployments.Items))
 
-	if len(pods.Items) == 0 {
-		logger.Debug("no pods are configured")
+	if len(deployments.Items) == 0 {
+		logger.Debug("no deployments are configured")
 		return nil
 	}
 
-	for _, pod := range pods.Items {
+	for _, deployment := range deployments.Items {
 		logger := logger.WithFields(log.Fields{
-			"name":      pod.Name,
-			"namespace": pod.Namespace,
+			"deploymentName":      deployment.Name,
+			"deploymentNamespace": deployment.Namespace,
 		})
 		ctx = context.WithValue(ctx, "logger", logger)
-		logger.Tracef("looking at pod %s", pod.Name)
+		logger.Tracef("looking at deployment %s", deployment.Name)
 
-		maxAge, err := getPodMaxAge(ctx, pod)
+		maxAge, err := getDeploymentMaxAge(ctx, deployment)
 		if err != nil {
 			logger.WithError(err).Error("could not determine maximum setting for pod")
 			continue
 		}
-		runtime := getPodRuntime(pod)
 
-		if runtime > *maxAge {
-			logger.Infof("restarting pod due to old age %s", runtime.String())
-			err := restartPod(kubectl, pod)
+		if maxAge == nil {
+			maxAge = &defaultMaxAge
+		}
+
+		logger.Trace("attempting to list existing pods")
+		pods, err := kubectl.CoreV1().Pods("").List(metav1.ListOptions{
+			LabelSelector: deployment.Spec.Selector.String(),
+		})
+		if err != nil {
+			logger.WithError(err).Debug("list pods failed")
+			return err
+		}
+
+		deploymentAged := false
+		for _, pod := range pods.Items {
+			logger := logger.WithFields(log.Fields{
+				"podName": pod.Name,
+			})
+			ctx = context.WithValue(ctx, "logger", logger)
+			logger.Tracef("looking at pod %s", pod.Name)
+
+			runtime := getPodRuntime(pod)
+
+			if runtime > *maxAge {
+				logger.Debugf("deployment contains an aged pod: %s", pod.Name)
+				deploymentAged = true
+			}
+		}
+
+		if deploymentAged {
+			logger.Infof("restarting deployment due to old age %s", deployment.Name)
+
+			err := restartDeployment(kubectl, deployment)
 			if err != nil {
 				logger.WithError(err).Error("failed to restart pod")
 				continue
@@ -222,9 +247,11 @@ func cycle(ctx context.Context) error {
 	return nil
 }
 
-func restartPod(kubectl *kubernetes.Clientset, pod v1.Pod) error {
-	pod.Annotations[AnnotationRestartedOn] = time.Now().String()
-	_, err := kubectl.CoreV1().Pods("").Update(&pod)
+func restartDeployment(kubectl *kubernetes.Clientset, deployment appsv1.Deployment) error {
+	restartedOn := time.Now().String()
+	deployment.Spec.Template.ObjectMeta.Annotations[AnnotationRestartedOn] = restartedOn
+
+	_, err := kubectl.AppsV1().Deployments(deployment.Namespace).Update(&deployment)
 
 	return err
 }
@@ -233,13 +260,12 @@ func getPodRuntime(pod v1.Pod) time.Duration {
 	return time.Now().Sub(pod.CreationTimestamp.Time)
 }
 
-func getPodMaxAge(ctx context.Context, pod v1.Pod) (*time.Duration, error) {
+func getDeploymentMaxAge(ctx context.Context, deployment appsv1.Deployment) (*time.Duration, error) {
 	maxAgeLabel := ctx.Value("maxAgeLabel").(string)
-	defaultMaxAge := ctx.Value("maxAgeLabel").(time.Duration)
 	logger := ctx.Value("logger").(*log.Entry)
-	maxAge := &defaultMaxAge
+	var maxAge *time.Duration
 
-	for key, val := range pod.Annotations {
+	for key, val := range deployment.Annotations {
 		if key == maxAgeLabel {
 			duration, err := time.ParseDuration(val)
 			if err != nil {
