@@ -1,0 +1,19 @@
+apiVersion: extensions/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  labels:
+    Product: "lic"
+    cmlayer: "App"
+    app: "kloudless"
+    role: "kloudless"
+  name: learn-svc-kloudless-policy
+spec:
+  allowPrivilegeEscalation: false
+  fsGroup:
+    rule: RunAsAny
+  runAsUser:
+    rule: RunAsAny
+  seLinux:
+    rule: RunAsAny
+  supplementalGroups:
+    rule: RunAsAny
