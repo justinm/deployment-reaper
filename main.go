@@ -28,12 +28,12 @@ type CLI struct {
 	DeploymentName string `env:"PUBLICHOST" hidden:"true" default:"local"`
 	Age            string `required:"true" help:"The default age of a container if no max-age annotation is provided."`
 	Namespace      string `env:"NAMESPACE" required:"true" help:"The namespace this service runs in."`
-	ManagedLabel   string `required:"true" default:"lifecycle.kubernetes.io/managed" help:"The name of a label that declares a pod should be managed."`
-	MaxAgeLabel    string `required:"true" default:"lifecycle.kubernetes.io/max-age" help:"The name of a label that declares the maximum age of a pod."`
+	ManagedLabel   string `required:"true" default:"reaper.kubernetes.io/managed" help:"The name of a label that declares a pod should be managed."`
+	MaxAgeLabel    string `required:"true" default:"reaper.kubernetes.io/max-age" help:"The name of a label that declares the maximum age of a pod."`
 }
 
 const (
-	AnnotationRestartedOn = "lifecycle.kubernetes.io/restarted-on"
+	AnnotationRestartedOn = "reaper.kubernetes.io/restarted-on"
 )
 
 func exitHandler(ctx context.Context) context.Context {
@@ -73,8 +73,8 @@ func createKubectl(kubeConfig string) (*kubernetes.Clientset, error) {
 func main() {
 	var cli CLI
 	kong.Parse(&cli,
-		kong.Name("pod-lifecycle"),
-		kong.Description("A service for automatically restarting pods based on a pods age."),
+		kong.Name("deployment-reaper"),
+		kong.Description("A Kubernetes service for the automatic restart of old pods."),
 		kong.UsageOnError(),
 		kong.Configuration(kong.JSON, "./.config.json"),
 	)
