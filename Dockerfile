@@ -11,4 +11,7 @@ FROM golang:1.14
 
 COPY --from=build /app/pod-lifecycle /usr/bin/pod-lifecycle
 
+# Run as daemon user, use of root is discouraged
+USER 2
+
 ENTRYPOINT ["/usr/bin/pod-lifecycle"]
