@@ -22,8 +22,8 @@ import (
 type CLI struct {
 	KubeConfig     string `type:"path" default:"~/.kube/config" env:"KUBECONFIG" help:"The kubeconfig used to authenticate with Kubernetes."`
 	Verbosity      int    `name:"verbose" type:"counter" short:"v" help:"Tweak the verbosity of the logs." `
-	Interval       int    `default:"5" short:"i" required:"true" help:"How often a reaping cycle should occur."`
-	Age            string `required:"true" short:"a" help:"The default age of a container if no max-age annotation is provided."`
+	Interval       string `default:"60s" short:"i" required:"true" help:"How often a reaping cycle should occur."`
+	DefaultMaxAge  string `required:"true" short:"a" help:"The default maximum age of a container if no max-age label is provided."`
 	Namespace      string `env:"NAMESPACE" short:"n" required:"true" help:"The namespace this service runs in."`
 	ManagedLabel   string `required:"true" default:"reaper.kubernetes.io/managed" help:"The name of a label that declares a deployment should be managed."`
 	MaxAgeLabel    string `required:"true" default:"reaper.kubernetes.io/max-age" help:"The name of a label that declares the maximum age of a deployment."`
@@ -39,6 +39,7 @@ const (
 	ctxManagedLabel  = "managedLabel"
 	ctxMaxAgeLabel   = "maxAgeLabel"
 	ctxRestartLabel  = "restartLabel"
+	ctxInterval      = "interval"
 )
 
 func exitHandler(ctx context.Context) context.Context {
@@ -91,9 +92,14 @@ func main() {
 		logger.WithError(err).Fatal("could not connect to kubernetes")
 	}
 
-	defaultMaxAge, err := time.ParseDuration(cli.Age)
+	defaultMaxAge, err := time.ParseDuration(cli.DefaultMaxAge)
 	if err != nil {
 		log.WithError(err).Fatal("could not parse --age")
+	}
+
+	interval, err := time.ParseDuration(cli.Interval)
+	if err != nil {
+		log.WithError(err).Fatal("could not parse --interval")
 	}
 
 	ctx := context.Background()
@@ -103,9 +109,11 @@ func main() {
 	ctx = context.WithValue(ctx, ctxManagedLabel, cli.ManagedLabel)
 	ctx = context.WithValue(ctx, ctxMaxAgeLabel, cli.MaxAgeLabel)
 	ctx = context.WithValue(ctx, ctxRestartLabel, cli.RestartLabel)
+	ctx = context.WithValue(ctx, ctxInterval, interval)
 	ctx, cancel := context.WithCancel(ctx)
 	ctx = exitHandler(ctx)
 
+	logger.Info("reaper has initialized")
 	// we use the Lease lock type since edits to Leases are less common
 	// and fewer objects in the cluster watch "all Leases".
 	lock := &resourcelock.LeaseLock{
@@ -137,11 +145,11 @@ func main() {
 						logger.WithError(err).Error("cycle failed")
 					}
 
-					logger.Debugf("will run again in %d seconds at %s", cli.Interval, time.Now().Add(time.Duration(cli.Interval)).String())
+					logger.Debugf("will run again in %s at %s", cli.Interval, time.Now().Add(interval).String())
 				}
 
 				go func() {
-					timer := time.NewTicker(time.Second * time.Duration(cli.Interval))
+					timer := time.NewTicker(interval)
 					for {
 						select {
 						case <-timer.C:
