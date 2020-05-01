@@ -221,7 +221,7 @@ func cycle(ctx context.Context) error {
 		logger.Tracef("looking at deployment %s", deployment.Name)
 
 		if shouldBackoff(ctx, deployment) {
-			logger.Debugf("backing off for now")
+			logger.Debugf("backing off deployment %s for now", deployment.Name)
 			continue
 		}
 
@@ -264,7 +264,7 @@ func cycle(ctx context.Context) error {
 
 			runtime := getPodRuntime(pod)
 
-			logger.Debugf("pod is aged %s", runtime)
+			logger.Tracef("pod is aged %s", runtime)
 
 			if runtime > *maxAge {
 				logger.Debugf("deployment contains an aged pod: %s", pod.Name)
@@ -273,7 +273,7 @@ func cycle(ctx context.Context) error {
 		}
 
 		if deploymentAged {
-			logger.Infof("restarting deployment due to aged pods")
+			logger.Infof("restarting deployment %s due to aged pods", deployment.Name)
 
 			err := restartDeployment(ctx, kubectl, deployment)
 			if err != nil {
@@ -297,7 +297,7 @@ func shouldBackoff(ctx context.Context, deployment appsv1.Deployment) bool {
 				continue
 			}
 
-			if time.Now().Add(backoffPeriod).After(lastRestartedOn) {
+			if time.Now().Before(lastRestartedOn.Add(backoffPeriod)) {
 				return true
 			}
 		}
