@@ -214,9 +214,11 @@ func cycle(ctx context.Context) error {
 
 		maxAge, err := getDeploymentMaxAge(ctx, deployment)
 		if err != nil {
-			logger.WithError(err).Error("could not determine maximum setting for pod")
+			logger.WithError(err).Error("could not determine maximum setting for deployment")
 			continue
 		}
+
+		logger.Tracef("pods should not be allowed to age older than %s", maxAge)
 
 		if maxAge == nil {
 			maxAge = &defaultMaxAge
@@ -236,11 +238,20 @@ func cycle(ctx context.Context) error {
 		for _, pod := range pods.Items {
 			logger := logger.WithFields(log.Fields{
 				"podName": pod.Name,
+				"phase":   pod.Status.Phase,
 			})
 			ctx = context.WithValue(ctx, "logger", logger)
+
+			if pod.Status.Phase != v1.PodRunning {
+				logger.Debugf("skipping pod as it's phase != PodRunning", pod.Status.Phase)
+				continue
+			}
+
 			logger.Tracef("looking at pod %s", pod.Name)
 
 			runtime := getPodRuntime(pod)
+
+			logger.Debugf("pod is aged %s", runtime)
 
 			if runtime > *maxAge {
 				logger.Debugf("deployment contains an aged pod: %s", pod.Name)
@@ -249,11 +260,11 @@ func cycle(ctx context.Context) error {
 		}
 
 		if deploymentAged {
-			logger.Infof("restarting deployment due to old age %s", deployment.Name)
+			logger.Infof("restarting deployment due to aged pods")
 
 			err := restartDeployment(ctx, kubectl, deployment)
 			if err != nil {
-				logger.WithError(err).Error("failed to restart pod")
+				logger.WithError(err).Error("failed to restart deployment")
 				continue
 			}
 		}
@@ -265,6 +276,10 @@ func cycle(ctx context.Context) error {
 func restartDeployment(ctx context.Context, kubectl *kubernetes.Clientset, deployment appsv1.Deployment) error {
 	restartedOn := time.Now().String()
 	annotationRestartedOn := ctx.Value(ctxRestartLabel).(string)
+
+	if deployment.Spec.Template.ObjectMeta.Annotations == nil {
+		deployment.Spec.Template.ObjectMeta.Annotations = map[string]string{}
+	}
 
 	deployment.Spec.Template.ObjectMeta.Annotations[annotationRestartedOn] = restartedOn
 
@@ -282,7 +297,7 @@ func getDeploymentMaxAge(ctx context.Context, deployment appsv1.Deployment) (*ti
 	logger := ctx.Value(ctxLogger).(*log.Entry)
 	var maxAge *time.Duration
 
-	for key, val := range deployment.Annotations {
+	for key, val := range deployment.Labels {
 		if key == maxAgeLabel {
 			duration, err := time.ParseDuration(val)
 			if err != nil {
