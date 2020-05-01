@@ -22,18 +22,23 @@ import (
 type CLI struct {
 	KubeConfig     string `type:"path" default:"~/.kube/config" env:"KUBECONFIG" help:"The kubeconfig used to authenticate with Kubernetes."`
 	Verbosity      int    `name:"verbose" type:"counter" short:"v" help:"Tweak the verbosity of the logs." `
-	Interval       int    `default:"5" required:"true" help:"How often a reaping cycle should occur."`
-	NodeName       string `env:"NODE_NAME" hidden:"true"`
-	HostName       string `env:"HOSTNAME" hidden:"true"`
-	DeploymentName string `env:"PUBLICHOST" hidden:"true" default:"local"`
-	Age            string `required:"true" help:"The default age of a container if no max-age annotation is provided."`
-	Namespace      string `env:"NAMESPACE" required:"true" help:"The namespace this service runs in."`
-	ManagedLabel   string `required:"true" default:"reaper.kubernetes.io/managed" help:"The name of a label that declares a pod should be managed."`
-	MaxAgeLabel    string `required:"true" default:"reaper.kubernetes.io/max-age" help:"The name of a label that declares the maximum age of a pod."`
+	Interval       int    `default:"5" short:"i" required:"true" help:"How often a reaping cycle should occur."`
+	Age            string `required:"true" short:"a" help:"The default age of a container if no max-age annotation is provided."`
+	Namespace      string `env:"NAMESPACE" short:"n" required:"true" help:"The namespace this service runs in."`
+	ManagedLabel   string `required:"true" default:"reaper.kubernetes.io/managed" help:"The name of a label that declares a deployment should be managed."`
+	MaxAgeLabel    string `required:"true" default:"reaper.kubernetes.io/max-age" help:"The name of a label that declares the maximum age of a deployment."`
+	RestartLabel   string `required:"true" default:"reaper.kubernetes.io/restarted-on" help:"The name of a pod annotation added/modified that restarts the deployment."`
+	PodName        string `env:"HOSTNAME" required:"true" hidden:"true" help:"The podname of the instance the service runs from."`
+	DeploymentName string `env:"PUBLICHOST" required:"true" hidden:"true" default:"local" help:"The name of the deployment, used for leader leasing."`
 }
 
 const (
-	AnnotationRestartedOn = "reaper.kubernetes.io/restarted-on"
+	ctxLogger        = "logger"
+	ctxKubectl       = "kubectl"
+	ctxDefaultMaxAge = "defaultMaxAge"
+	ctxManagedLabel  = "managedLabel"
+	ctxMaxAgeLabel   = "maxAgeLabel"
+	ctxRestartLabel  = "restartLabel"
 )
 
 func exitHandler(ctx context.Context) context.Context {
@@ -92,11 +97,12 @@ func main() {
 	}
 
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "logger", logger)
-	ctx = context.WithValue(ctx, "kubectl", kubectl)
-	ctx = context.WithValue(ctx, "defaultMaxAge", defaultMaxAge)
-	ctx = context.WithValue(ctx, "managedLabel", cli.ManagedLabel)
-	ctx = context.WithValue(ctx, "maxAgeLabel", cli.MaxAgeLabel)
+	ctx = context.WithValue(ctx, ctxLogger, logger)
+	ctx = context.WithValue(ctx, ctxKubectl, kubectl)
+	ctx = context.WithValue(ctx, ctxDefaultMaxAge, defaultMaxAge)
+	ctx = context.WithValue(ctx, ctxManagedLabel, cli.ManagedLabel)
+	ctx = context.WithValue(ctx, ctxMaxAgeLabel, cli.MaxAgeLabel)
+	ctx = context.WithValue(ctx, ctxRestartLabel, cli.RestartLabel)
 	ctx, cancel := context.WithCancel(ctx)
 	ctx = exitHandler(ctx)
 
@@ -109,7 +115,7 @@ func main() {
 		},
 		Client: kubectl.CoordinationV1(),
 		LockConfig: resourcelock.ResourceLockConfig{
-			Identity: cli.HostName,
+			Identity: cli.PodName,
 		},
 	}
 
@@ -149,12 +155,12 @@ func main() {
 				run()
 			},
 			OnStoppedLeading: func() {
-				logger.Infof("leader lost: %s", cli.HostName)
+				logger.Infof("leader lost: %s", cli.PodName)
 				cancel()
 				os.Exit(0)
 			},
 			OnNewLeader: func(identity string) {
-				if identity == cli.HostName {
+				if identity == cli.PodName {
 					// I just got the lock
 					return
 				}
@@ -167,10 +173,10 @@ func main() {
 }
 
 func cycle(ctx context.Context) error {
-	kubectl := ctx.Value("kubectl").(*kubernetes.Clientset)
-	logger := ctx.Value("logger").(*log.Entry)
-	defaultMaxAge := ctx.Value("defaultMaxAge").(time.Duration)
-	managedLabel := ctx.Value("managedLabel").(string)
+	kubectl := ctx.Value(ctxKubectl).(*kubernetes.Clientset)
+	logger := ctx.Value(ctxLogger).(*log.Entry)
+	defaultMaxAge := ctx.Value(ctxDefaultMaxAge).(time.Duration)
+	managedLabel := ctx.Value(ctxManagedLabel).(string)
 
 	labelSelector := labels.Set(map[string]string{managedLabel: "true"})
 
@@ -236,7 +242,7 @@ func cycle(ctx context.Context) error {
 		if deploymentAged {
 			logger.Infof("restarting deployment due to old age %s", deployment.Name)
 
-			err := restartDeployment(kubectl, deployment)
+			err := restartDeployment(ctx, kubectl, deployment)
 			if err != nil {
 				logger.WithError(err).Error("failed to restart pod")
 				continue
@@ -247,9 +253,11 @@ func cycle(ctx context.Context) error {
 	return nil
 }
 
-func restartDeployment(kubectl *kubernetes.Clientset, deployment appsv1.Deployment) error {
+func restartDeployment(ctx context.Context, kubectl *kubernetes.Clientset, deployment appsv1.Deployment) error {
 	restartedOn := time.Now().String()
-	deployment.Spec.Template.ObjectMeta.Annotations[AnnotationRestartedOn] = restartedOn
+	annotationRestartedOn := ctx.Value(ctxRestartLabel).(string)
+
+	deployment.Spec.Template.ObjectMeta.Annotations[annotationRestartedOn] = restartedOn
 
 	_, err := kubectl.AppsV1().Deployments(deployment.Namespace).Update(&deployment)
 
@@ -261,8 +269,8 @@ func getPodRuntime(pod v1.Pod) time.Duration {
 }
 
 func getDeploymentMaxAge(ctx context.Context, deployment appsv1.Deployment) (*time.Duration, error) {
-	maxAgeLabel := ctx.Value("maxAgeLabel").(string)
-	logger := ctx.Value("logger").(*log.Entry)
+	maxAgeLabel := ctx.Value(ctxMaxAgeLabel).(string)
+	logger := ctx.Value(ctxLogger).(*log.Entry)
 	var maxAge *time.Duration
 
 	for key, val := range deployment.Annotations {
