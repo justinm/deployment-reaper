@@ -23,6 +23,7 @@ type CLI struct {
 	KubeConfig     string `type:"path" default:"~/.kube/config" env:"KUBECONFIG" help:"The kubeconfig used to authenticate with Kubernetes."`
 	Verbosity      int    `name:"verbose" type:"counter" short:"v" help:"Tweak the verbosity of the logs." `
 	Interval       string `default:"60s" short:"i" required:"true" help:"How often a reaping cycle should occur."`
+	BackoffPeriod  string `required:"true" short:"b" default:"60s" help:"The duration between the time a deployment is restarted and allowed to be restarted again."`
 	DefaultMaxAge  string `required:"true" short:"a" help:"The default maximum age of a container if no max-age label is provided."`
 	Namespace      string `env:"NAMESPACE" short:"n" required:"true" help:"The namespace this service runs in."`
 	ManagedLabel   string `required:"true" default:"reaper.kubernetes.io/managed" help:"The name of a label that declares a deployment should be managed."`
@@ -40,6 +41,7 @@ const (
 	ctxMaxAgeLabel   = "maxAgeLabel"
 	ctxRestartLabel  = "restartLabel"
 	ctxInterval      = "interval"
+	ctxBackoffPeriod = "backoffPeriod"
 )
 
 func exitHandler(ctx context.Context) context.Context {
@@ -102,6 +104,11 @@ func main() {
 		log.WithError(err).Fatal("could not parse --interval")
 	}
 
+	backoffPeriod, err := time.ParseDuration(cli.BackoffPeriod)
+	if err != nil {
+		log.WithError(err).Fatal("could not parse --backoff-period")
+	}
+
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, ctxLogger, logger)
 	ctx = context.WithValue(ctx, ctxKubectl, kubectl)
@@ -110,6 +117,7 @@ func main() {
 	ctx = context.WithValue(ctx, ctxMaxAgeLabel, cli.MaxAgeLabel)
 	ctx = context.WithValue(ctx, ctxRestartLabel, cli.RestartLabel)
 	ctx = context.WithValue(ctx, ctxInterval, interval)
+	ctx = context.WithValue(ctx, ctxBackoffPeriod, backoffPeriod)
 	ctx, cancel := context.WithCancel(ctx)
 	ctx = exitHandler(ctx)
 
@@ -212,6 +220,11 @@ func cycle(ctx context.Context) error {
 		ctx = context.WithValue(ctx, "logger", logger)
 		logger.Tracef("looking at deployment %s", deployment.Name)
 
+		if shouldBackoff(ctx, deployment) {
+			logger.Debugf("backing off for now")
+			continue
+		}
+
 		maxAge, err := getDeploymentMaxAge(ctx, deployment)
 		if err != nil {
 			logger.WithError(err).Error("could not determine maximum setting for deployment")
@@ -273,14 +286,39 @@ func cycle(ctx context.Context) error {
 	return nil
 }
 
-func restartDeployment(ctx context.Context, kubectl *kubernetes.Clientset, deployment appsv1.Deployment) error {
-	restartedOn := time.Now().String()
+func shouldBackoff(ctx context.Context, deployment appsv1.Deployment) bool {
 	annotationRestartedOn := ctx.Value(ctxRestartLabel).(string)
+	backoffPeriod := ctx.Value(ctxBackoffPeriod).(time.Duration)
+
+	for key, val := range deployment.Annotations {
+		if key == annotationRestartedOn {
+			lastRestartedOn, err := time.Parse(time.RFC3339, val)
+			if err != nil {
+				continue
+			}
+
+			if time.Now().Add(backoffPeriod).After(lastRestartedOn) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func restartDeployment(ctx context.Context, kubectl *kubernetes.Clientset, deployment appsv1.Deployment) error {
+	restartedOn := time.Now().Format(time.RFC3339)
+	annotationRestartedOn := ctx.Value(ctxRestartLabel).(string)
+
+	if deployment.ObjectMeta.Annotations == nil {
+		deployment.ObjectMeta.Annotations = map[string]string{}
+	}
 
 	if deployment.Spec.Template.ObjectMeta.Annotations == nil {
 		deployment.Spec.Template.ObjectMeta.Annotations = map[string]string{}
 	}
 
+	deployment.ObjectMeta.Annotations[annotationRestartedOn] = restartedOn
 	deployment.Spec.Template.ObjectMeta.Annotations[annotationRestartedOn] = restartedOn
 
 	_, err := kubectl.AppsV1().Deployments(deployment.Namespace).Update(&deployment)
