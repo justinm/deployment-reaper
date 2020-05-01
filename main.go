@@ -143,7 +143,7 @@ func main() {
 		RetryPeriod:     5 * time.Second,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
-				logger.Info("I'm the leader, starting cycle")
+				logger.Info("I'm the leader, night gathers, and now my watch begins. It shall not end until my death.")
 				// we're notified when we start - this is where you would
 				// usually put your code
 
