@@ -188,7 +188,7 @@ func cycle(ctx context.Context) error {
 
 	labelSelector := labels.Set(map[string]string{managedLabel: "true"})
 
-	logger.Trace("attempting to list managed deployments")
+	logger.Tracef("attempting to list managed deployments labeled via %s", labelSelector.String())
 	deployments, err := kubectl.AppsV1().Deployments("").List(metav1.ListOptions{
 		LabelSelector: labelSelector.String(),
 	})
@@ -222,9 +222,10 @@ func cycle(ctx context.Context) error {
 			maxAge = &defaultMaxAge
 		}
 
-		logger.Trace("attempting to list existing pods")
+		podSelector := labels.Set(deployment.Spec.Selector.MatchLabels)
+		logger.Tracef("attempting to list existing pods via selector %s", podSelector.String())
 		pods, err := kubectl.CoreV1().Pods("").List(metav1.ListOptions{
-			LabelSelector: deployment.Spec.Selector.String(),
+			LabelSelector: podSelector.String(),
 		})
 		if err != nil {
 			logger.WithError(err).Debug("list pods failed")
