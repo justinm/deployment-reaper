@@ -20,3 +20,90 @@ Common Use Cases
 
 * Does your application have leaky RAM? Give it a restart.
 * Cleanup old temporary on-local-disk data.
+
+Usage
+-----
+
+`./deployment-reaper --help`
+
+```
+Usage: deployment-reaper --interval="60s" --backoff-period="60s" --default-max-age=STRING --namespace=STRING --managed-label="reaper.kubernetes.io/managed" --max-age-label="reaper.kubernetes.io/max-age" --restart-label="reaper.kubernetes.io/restarted-on"
+
+A Kubernetes service for the automatic restart of old pods.
+
+Flags:
+      --help                                                 Show context-sensitive help.
+      --kube-config="~/.kube/config"                         The kubeconfig used to authenticate with Kubernetes ($KUBECONFIG).
+  -v, --verbose=INT                                          Tweak the verbosity of the logs.
+  -i, --interval="60s"                                       How often a reaping cycle should occur.
+  -b, --backoff-period="60s"                                 The duration between the time a deployment is restarted and allowed to be restarted again.
+  -a, --default-max-age=STRING                               The default maximum age of a container if no max-age label is provided.
+  -n, --namespace=STRING                                     The namespace this service runs in ($NAMESPACE).
+      --managed-label="reaper.kubernetes.io/managed"         The name of a label that declares a deployment should be managed.
+      --max-age-label="reaper.kubernetes.io/max-age"         The name of a label that declares the maximum age of a deployment.
+      --restart-label="reaper.kubernetes.io/restarted-on"    The name of a pod annotation added/modified that restarts the deployment.
+```
+
+Required Privileges
+----------
+
+Deployment-reaper requires RBAC permissions at both the Cluster and Namespace 
+level. The service requires access to get/list all pods in all namespaces, as well
+as modify deployments at the cluster scope. The following RBAC examples can be
+used for granting the proper permissions.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-reaper
+  namespace: kube-system
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "update", "create"]
+```
+
+```yaml
+kind: ClusterRole
+metadata:
+  name: deployment-reaper
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: ["extensions", "apps" ]
+  resources: ["deployments"]
+  verbs: ["get", "list", "update"]
+```
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: deployment-reaper
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: deployment-reaper
+subjects:
+- kind: ServiceAccount
+  name: deployment-reaper
+  namespace: kube-system
+```
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployment-reaper
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deployment-reaper
+subjects:
+- kind: ServiceAccount
+  name: deployment-reaper
+  namespace: kube-system
+```
