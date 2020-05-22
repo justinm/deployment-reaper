@@ -21,6 +21,20 @@ Common Use Cases
 * Does your application have leaky RAM? Give it a restart.
 * Cleanup old temporary on-local-disk data.
 
+Monitoring Deployments
+----------
+
+deployment-reaper uses labels attached to deployments to determine both 
+A) if a deployment should be monitored or
+B) the maximum age of a deployments pods.
+
+
+```yaml
+  labels:
+    reaper.kubernetes.io/managed: "true"
+    reaper.kubernetes.io/max-age: 1h
+```
+
 Usage
 -----
 
