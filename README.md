@@ -1,6 +1,10 @@
 deployment-reaper - A Kubernetes service for the automatic restart of old pods.
 ==========
 
+[![license](https://img.shields.io/github/license/justinm/deployment-reaper)](LICENSE)
+[![release](https://img.shields.io/github/v/release/justinm/deployment-reaper)](https://github.com/justinm/deployment-reaper/releases/latest)
+[![docker](https://img.shields.io/docker/cloud/build/justoman05/deployment-reaper)](https://hub.docker.com/repository/docker/justoman05/deployment-reaper)
+
 **Please Note**: This service has not yet been tested for production use. Use at your own peril.
 
 deployment-reaper is a service designed to automate the restarting of pods that
