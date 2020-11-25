@@ -16,15 +16,17 @@ from logging import getLogger
 
 logger = getLogger(__name__)
 
-logger.addHandler(logging.StreamHandler(stream=sys.stdout))
+log_stream_handler = logging.StreamHandler(stream=sys.stdout)
+log_stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(log_stream_handler)
 
 @click.command()
 @click.pass_context
-@click.option('--dryrun', '-n', is_flag=True, help="Do not restart, only log events")
+@click.option('--dryrun', '-n', is_flag=True, type=click.STRING, help="Do not restart, only log events")
 @click.option('--verbose', '-v', count=True, help="Change the verbosity of the logs")
-@click.option('--interval', '-i', required=True, default='60s', envvar='DEPLOYMENT_REAPER_INTERVAL', help='How often a reaping cycle should occur')
-@click.option('--backoff-period', required=True, default='5m', envvar='DEPLOYMENT_REAPER_BACKOFF_PERIOD', help='The duration between the time a deployment is restarted and allowed to be restarted again')
-@click.option('--default-max-age', required=True, envvar='DEPLOYMENT_REAPER_DEFAULT_MAX_AGE', help='The default maximum age of a container if no max-age label is provided')
+@click.option('--interval', '-i', required=True, type=click.STRING, default='60s', envvar='DEPLOYMENT_REAPER_INTERVAL', help='How often a reaping cycle should occur')
+@click.option('--backoff-period', required=True, type=click.STRING, default='5m', envvar='DEPLOYMENT_REAPER_BACKOFF_PERIOD', help='The duration between the time a deployment is restarted and allowed to be restarted again')
+@click.option('--default-max-age', required=True, type=click.STRING, envvar='DEPLOYMENT_REAPER_DEFAULT_MAX_AGE', help='The default maximum age of a container if no max-age label is provided')
 def reaper(context, dryrun, verbose, interval, backoff_period, default_max_age):
     context.obj = {
         'dryrun': dryrun,
@@ -37,7 +39,7 @@ def reaper(context, dryrun, verbose, interval, backoff_period, default_max_age):
         'restart_label': os.getenv('', 'reaper.kubernetes.io/restarted-on'),
     }
 
-    logger.setLevel(30 - (verbose * 10))
+    logger.setLevel(max(0, 20 - (verbose * 10)))
 
     config.load_kube_config()
 
@@ -58,10 +60,10 @@ def reaper(context, dryrun, verbose, interval, backoff_period, default_max_age):
 
 
 def cycle(ctx):
-    logger.debug('scanning for managed objects')
+    logger.info('Cycling has started')
     managed_objects = get_managed_objects(ctx)
 
-    logger.info('will process %d found objects' % (len(managed_objects),))
+    logger.debug('will process %d found objects' % (len(managed_objects),))
 
     for managed_object in managed_objects:
         if object_aged(ctx, managed_object):
@@ -75,6 +77,8 @@ def cycle(ctx):
                 logger.debug('backing off restart of object %s/%s' % (managed_object.metadata.namespace, managed_object.metadata.name))
         else:
             logger.debug('object %s/%s has not aged enough' % (managed_object.metadata.namespace, managed_object.metadata.name))
+
+    logger.info('Cycling has completed')
 
 
 def should_backoff(ctx, managed_object: typing.Union[client.V1Deployment, client.V1DaemonSet]) -> bool:
