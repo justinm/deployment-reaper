@@ -1,7 +1,0 @@
-{
-  "interval": "15s",
-  "verbose": 3,
-  "default_max_age": "1440h",
-  "pod_name": "local",
-  "namespace": "kube-system"
-}

@@ -1,17 +1,11 @@
-FROM golang:1.14 AS build
+FROM python:3.7 AS build
 
-ENV GOPATH=/go
 WORKDIR /app
+COPY requirements.txt /app
+RUN pip3 install -r requirements.txt
 COPY . .
-
-RUN go get -d \
-    && go build -o deploment-reaper *.go
-
-FROM golang:1.14
-
-COPY --from=build /app/deploment-reaper /usr/bin/deploment-reaper
 
 # Run as daemon user, use of root is discouraged
 USER 2
 
-ENTRYPOINT ["/usr/bin/deploment-reaper"]
+ENTRYPOINT ["/app/reaper.py"]
